@@ -1,0 +1,30 @@
+name: secstore
+arch: ${SECSTORE_ARCH}
+platform: linux
+version: ${SECSTORE_VERSION}
+maintainer: Brandon Poe <Bpoe@users.noreply.github.com>
+description: Local age-encrypted secret store with non-swappable tmpfs hydration.
+homepage: https://github.com/Bpoe/secstore
+license: MIT
+section: utils
+priority: optional
+
+contents:
+  - src: dist/secstore
+    dst: /usr/bin/secstore
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: packaging/systemd/secstore-hydrate.service
+    dst: /usr/lib/systemd/system/secstore-hydrate.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+  - src: LICENSE
+    dst: /usr/share/doc/secstore/copyright
+    file_info:
+      mode: 0644
+      owner: root
+      group: root

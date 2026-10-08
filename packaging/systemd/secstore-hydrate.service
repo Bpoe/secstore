@@ -1,0 +1,21 @@
+[Unit]
+Description=Hydrate secstore secrets into tmpfs before Docker
+Documentation=https://github.com/Bpoe/secstore
+Before=docker.service
+After=local-fs.target
+RequiresMountsFor=/var/lib/secstore
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Standalone Compose bind-mounts secrets and ignores their uid/gid/mode
+# settings. Allow unprivileged container users to read explicitly mounted
+# secrets; the root-owned 0700 host directories still prevent host access.
+Environment=SECSTORE_FILE_MODE=0444
+ExecStart=/usr/bin/secstore hydrate
+
+# Do not enable PrivateMounts: Docker must see the runtime tmpfs mount.
+
+[Install]
+WantedBy=docker.service
