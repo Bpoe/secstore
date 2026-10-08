@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Build and package (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
+          - arch: arm7
+            goarch: arm
+    env:
+      SECSTORE_ARCH: ${{ matrix.arch }}
+      SECSTORE_VERSION: 0.0.0-dev.${{ github.run_number }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: gofmt -w $(git ls-files '*.go') && git diff --exit-code -- '*.go'
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build mount tests
+        run: go test -c -o secstore.test ./internal/secstore
+
+      - name: Test noswap mounts
+        run: sudo unshare --mount --propagation private env SECSTORE_MOUNT_TEST=1 ./secstore.test -test.run '^TestRuntimeIntegration$'
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: "7"
+        run: go build -trimpath -o dist/secstore ./cmd/secstore
+
+      - name: Install packaging tool
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+
+      - name: Package deb
+        run: nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+
+      - name: Package rpm
+        run: nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secstore-linux-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
