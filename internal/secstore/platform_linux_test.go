@@ -102,7 +102,7 @@ func TestRuntimeIntegration(t *testing.T) {
 		if err := os.MkdirAll(s.runDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := syscall.Mount("tmpfs", s.runDir, "tmpfs", 0, "size=1M"); err != nil {
+		if err := syscall.Mount("tmpfs", s.runDir, "tmpfs", 0, "size=1M,mode=0700"); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
@@ -127,7 +127,7 @@ func TestRuntimeIntegration(t *testing.T) {
 		if err := os.Mkdir(nested, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := syscall.Mount("tmpfs", nested, "tmpfs", 0, "size=1M"); err != nil {
+		if err := syscall.Mount("tmpfs", nested, "tmpfs", 0, "size=1M,mode=0700"); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
