@@ -9,20 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Configuration paths must have trusted ancestors. Refuse symlinks even when
 // they stay within a root, so secret names cannot alias one another.
 func privateDir(path string) (*os.Root, error) {
-	if err := checkPath(path); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(path, 0700); err != nil {
-		return nil, err
-	}
-	root, err := os.OpenRoot(path)
+	root, err := openPath(path, true)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateTree(root); err != nil {
+		return nil, errors.Join(err, root.Close())
 	}
 	if err := securePath(root, ".", 0700); err != nil {
 		return nil, errors.Join(err, root.Close())
@@ -31,20 +29,108 @@ func privateDir(path string) (*os.Root, error) {
 }
 
 func checkPath(path string) error {
-	for {
-		info, err := os.Lstat(path)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	root, err := openPath(path, false)
+	if err != nil || root == nil {
+		return err
+	}
+	return root.Close()
+}
+
+func trustedOwner(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && (stat.Uid == 0 || int(stat.Uid) == os.Geteuid())
+}
+
+func validateDirectory(info os.FileInfo, ancestor bool) error {
+	if !info.IsDir() {
+		return errors.New("not a real directory (symlinks are not allowed)")
+	}
+	if !trustedOwner(info) {
+		return errors.New("directory is not owned by root or the invoking user")
+	}
+	if info.Mode().Perm()&0022 != 0 && !(ancestor && info.Mode()&os.ModeSticky != 0) {
+		return errors.New("directory is writable by other users")
+	}
+	return nil
+}
+
+func openPath(path string, create bool) (*os.Root, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	if path == string(filepath.Separator) {
+		return nil, errors.New("filesystem root cannot be used as a private directory")
+	}
+	current, err := os.OpenRoot(string(filepath.Separator))
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
+	for i, part := range parts {
+		info, err := current.Lstat(part)
+		if errors.Is(err, fs.ErrNotExist) {
+			if !create {
+				return nil, current.Close()
+			}
+			if err := current.Mkdir(part, 0700); err != nil && !errors.Is(err, fs.ErrExist) {
+				return nil, errors.Join(err, current.Close())
+			}
+			info, err = current.Lstat(part)
+		}
+		if err != nil {
+			return nil, errors.Join(err, current.Close())
+		}
+		ancestor := i < len(parts)-1
+		if err := validateDirectory(info, ancestor); err != nil {
+			return nil, errors.Join(fmt.Errorf("%s: %w", filepath.Join(current.Name(), part), err), current.Close())
+		}
+		next, err := current.OpenRoot(part)
+		if err != nil {
+			return nil, errors.Join(err, current.Close())
+		}
+		openedInfo, err := next.Stat(".")
+		if err == nil && !os.SameFile(info, openedInfo) {
+			err = errors.New("directory changed during path validation")
+		}
+		if err == nil {
+			err = validateDirectory(openedInfo, ancestor)
+		}
+		if err != nil {
+			return nil, errors.Join(err, next.Close(), current.Close())
+		}
+		if err := current.Close(); err != nil {
+			return nil, errors.Join(err, next.Close())
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func validateTree(root *os.Root) error {
+	return fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
 			return err
 		}
-		if err == nil && !info.IsDir() {
-			return fmt.Errorf("not a real directory (symlinks are not allowed): %s", path)
+		info, err := entry.Info()
+		if err != nil {
+			return err
 		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return nil
+		if !trustedOwner(info) {
+			return fmt.Errorf("%s is not owned by root or the invoking user", path)
 		}
-		path = parent
-	}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink in private directory: %s", path)
+		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("not a regular file or directory: %s", path)
+		}
+		if info.Mode().Perm()&0022 != 0 {
+			return fmt.Errorf("%s is writable by other users", path)
+		}
+		return nil
+	})
 }
 
 func securePath(root *os.Root, path string, mode os.FileMode) error {

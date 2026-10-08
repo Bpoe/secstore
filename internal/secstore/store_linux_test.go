@@ -18,7 +18,7 @@ import (
 
 func testStore(t *testing.T) *store {
 	t.Helper()
-	base := t.TempDir()
+	base := privateTempDir(t)
 	return &store{
 		config: config{vaultDir: filepath.Join(base, "vault"), runDir: filepath.Join(base, "run"), runSize: "16M", fileMode: 0400},
 		log:    io.Discard,
@@ -32,6 +32,15 @@ func testStore(t *testing.T) *store {
 			return root.Close()
 		},
 	}
+}
+
+func privateTempDir(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir()
+	if err := os.Chmod(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func execute(t *testing.T, s *store, command, name string, data []byte) {
@@ -372,8 +381,108 @@ func TestSymlinksRejected(t *testing.T) {
 	}
 }
 
+func TestPrivateDirRejectsUntrustedPathsBeforeSecuring(t *testing.T) {
+	t.Run("writable target", func(t *testing.T) {
+		base := privateTempDir(t)
+		target := filepath.Join(base, "vault")
+		if err := os.Mkdir(target, 0777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0777); err != nil {
+			t.Fatal(err)
+		}
+		if root, err := privateDir(target); err == nil {
+			root.Close()
+			t.Fatal("accepted a writable target directory")
+		}
+		assertMode(t, target, 0777)
+	})
+
+	t.Run("writable ancestor", func(t *testing.T) {
+		base := privateTempDir(t)
+		ancestor := filepath.Join(base, "unsafe")
+		if err := os.Mkdir(ancestor, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(ancestor, 0777); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(ancestor, "vault")
+		if root, err := privateDir(target); err == nil {
+			root.Close()
+			t.Fatal("accepted a writable ancestor")
+		}
+		assertMissing(t, target)
+		assertMode(t, ancestor, 0777)
+	})
+
+	t.Run("writable vault content", func(t *testing.T) {
+		base := privateTempDir(t)
+		vault := filepath.Join(base, "vault")
+		if err := os.Mkdir(vault, 0700); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(vault, "identity.txt")
+		if err := os.WriteFile(file, []byte("synthetic"), 0666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(file, 0666); err != nil {
+			t.Fatal(err)
+		}
+		if root, err := privateDir(vault); err == nil {
+			root.Close()
+			t.Fatal("accepted writable vault content")
+		}
+		assertMode(t, vault, 0700)
+		assertMode(t, file, 0666)
+	})
+
+	t.Run("foreign-owned content", func(t *testing.T) {
+		if os.Geteuid() != 0 {
+			t.Skip("changing ownership requires root")
+		}
+		base := privateTempDir(t)
+		vault := filepath.Join(base, "vault")
+		if err := os.Mkdir(vault, 0700); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(vault, "identity.txt")
+		if err := os.WriteFile(file, []byte("synthetic"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(file, 1, -1); err != nil {
+			t.Fatal(err)
+		}
+		if root, err := privateDir(vault); err == nil {
+			root.Close()
+			t.Fatal("accepted foreign-owned vault content")
+		}
+		assertMode(t, vault, 0700)
+	})
+
+	t.Run("foreign-owned ancestor", func(t *testing.T) {
+		if os.Geteuid() != 0 {
+			t.Skip("changing ownership requires root")
+		}
+		base := privateTempDir(t)
+		ancestor := filepath.Join(base, "ancestor")
+		if err := os.Mkdir(ancestor, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chown(ancestor, 1, -1); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(ancestor, "vault")
+		if root, err := privateDir(target); err == nil {
+			root.Close()
+			t.Fatal("accepted a foreign-owned path component")
+		}
+		assertMissing(t, target)
+	})
+}
+
 func TestLockTimeoutAndRelease(t *testing.T) {
-	vault, err := privateDir(t.TempDir())
+	vault, err := privateDir(privateTempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
