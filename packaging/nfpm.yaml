@@ -22,6 +22,12 @@ contents:
       mode: 0644
       owner: root
       group: root
+  - src: dist/secstore.dsc.resource.json
+    dst: /usr/bin/secstore.dsc.resource.json
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
   - src: LICENSE
     dst: /usr/share/doc/secstore/copyright
     file_info:

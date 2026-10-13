@@ -1,0 +1,70 @@
+{
+  "$schema": "https://aka.ms/dsc/schemas/v3.1.0/bundled/resource/manifest.json",
+  "type": "Secstore/secrets",
+  "version": "0.0.0-dev",
+  "description": "Manage age-encrypted secstore secrets without returning secret values.",
+  "get": {
+    "executable": "secstore",
+    "args": ["dsc", "get"],
+    "input": "stdin"
+  },
+  "test": {
+    "executable": "secstore",
+    "args": ["dsc", "test"],
+    "input": "stdin",
+    "return": "stateAndDiff"
+  },
+  "set": {
+    "executable": "secstore",
+    "args": ["dsc", "set"],
+    "input": "stdin",
+    "implementsPretest": true,
+    "handlesExist": true,
+    "return": "stateAndDiff"
+  },
+  "schema": {
+    "embedded": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "$defs": {
+        "exist": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3.1.0/resource/properties/exist.json",
+          "title": "Instance should exist",
+          "description": "Indicates whether the DSC resource instance should exist.",
+          "type": "boolean",
+          "default": true,
+          "enum": [false, true]
+        },
+        "inDesiredState": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3.1.0/resource/properties/inDesiredState.json",
+          "title": "Instance is in the Desired State",
+          "description": "Indicates whether the instance is in the desired state. This property is only returned by the `test` method.",
+          "type": ["boolean", "null"],
+          "readOnly": true
+        }
+      },
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
+          "description": "The slash-separated secret name."
+        },
+        "value": {
+          "type": "string",
+          "writeOnly": true,
+          "description": "Secret input, including an empty string. Required by Test/Set when _exist is true. Never returned."
+        },
+        "_exist": {
+          "$ref": "https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3.1.0/resource/properties/exist.json"
+        },
+        "_inDesiredState": {
+          "$ref": "https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3.1.0/resource/properties/inDesiredState.json"
+        }
+      }
+    }
+  }
+}

@@ -16,6 +16,7 @@ const usage = `Usage:
   secstore add --name <name>        # reads plaintext from stdin
   secstore remove --name <name>
   secstore hydrate
+  secstore dsc get|test|set         # reads one JSON object from stdin
 
 Environment overrides:
   SECSTORE_VAULT_DIR   default: /var/lib/secstore
@@ -127,7 +128,10 @@ func parseArgs(args []string) (command, name string, help bool, err error) {
 }
 
 // Run executes a command using the supplied streams and process environment.
-func Run(args []string, stdin io.Reader, stderr io.Writer) error {
+func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) > 0 && args[0] == "dsc" {
+		return runDSC(args[1:], stdin, stdout, stderr)
+	}
 	command, name, help, err := parseArgs(args)
 	if err != nil {
 		return err

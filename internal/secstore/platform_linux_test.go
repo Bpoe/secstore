@@ -169,7 +169,7 @@ func TestRuntimeIntegration(t *testing.T) {
 		t.Setenv("SECSTORE_RUN_DIR", s.runDir)
 		t.Setenv("SECSTORE_RUN_SIZE", s.runSize)
 		t.Setenv("SECSTORE_FILE_MODE", "0444")
-		if err := Run([]string{"init"}, nil, io.Discard); err != nil {
+		if err := Run([]string{"init"}, nil, io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
@@ -177,10 +177,10 @@ func TestRuntimeIntegration(t *testing.T) {
 				t.Errorf("unmount runtime: %v", err)
 			}
 		})
-		if err := Run([]string{"add", "--name", "cli/key"}, strings.NewReader("synthetic"), io.Discard); err != nil {
+		if err := Run([]string{"add", "--name", "cli/key"}, strings.NewReader("synthetic"), io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
 		}
-		if err := Run([]string{"hydrate"}, nil, io.Discard); err != nil {
+		if err := Run([]string{"hydrate"}, nil, io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		path := filepath.Join(s.runDir, "cli", "key")
@@ -188,7 +188,7 @@ func TestRuntimeIntegration(t *testing.T) {
 		if string(readFile(t, path)) != "synthetic" {
 			t.Fatal("CLI hydration failed")
 		}
-		if err := Run([]string{"remove", "--name", "cli/key"}, nil, io.Discard); err != nil {
+		if err := Run([]string{"remove", "--name", "cli/key"}, nil, io.Discard, io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		assertMissing(t, path)
