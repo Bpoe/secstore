@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate stable release version
+        id: version
+        run: |
+          if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a stable vX.Y.Z tag without leading zeros or suffixes."
+            exit 1
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tagged source belongs to main
+        id: source
+        run: |
+          commit=$(git rev-parse --verify "$GITHUB_SHA^{commit}")
+          tag_commit=$(git rev-parse --verify "refs/tags/$VERSION^{commit}")
+          if [[ "$tag_commit" != "$commit" ]] || ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "::error::The tag must still point to the event commit, and that commit must belong to main."
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse existing releases, including drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! tags=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name'); then
+            echo "::error::Unable to check existing releases."
+            exit 1
+          fi
+          if grep -Fxq -- "$VERSION" <<< "$tags"; then
+            echo "::error::Release $VERSION already exists; inspect it manually."
+            exit 1
+          fi
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/ci.yaml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+      commit: ${{ needs.preflight.outputs.commit }}
+
+  draft:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      COMMIT: ${{ needs.preflight.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: secstore-linux-*
+          path: artifacts
+
+      - name: Verify exact release assets and checksums
+        run: |
+          diff <(printf '%s\n' secstore-linux-amd64 secstore-linux-arm64 secstore-linux-arm7 | sort) \
+               <(find artifacts -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          mkdir dist
+          : > dist/SHA256SUMS
+          package_version="${VERSION#v}"
+          for arch in amd64 arm64 arm7; do
+            case "$arch" in
+              amd64) deb_arch=amd64; rpm_arch=x86_64 ;;
+              arm64) deb_arch=arm64; rpm_arch=aarch64 ;;
+              arm7) deb_arch=armhf; rpm_arch=armv7hl ;;
+            esac
+            directory="artifacts/secstore-linux-$arch"
+            expected=("secstore-$VERSION-linux-$arch.tar.gz"
+                      "secstore_${package_version}_${deb_arch}.deb"
+                      "secstore-${package_version}-1.${rpm_arch}.rpm")
+            diff <(printf '%s\n' secstore SHA256SUMS "${expected[@]}" | sort) \
+                 <(find "$directory" -type f -printf '%P\n' | sort)
+            diff <(printf '%s\n' "${expected[@]}" | sort) \
+                 <(cut -c 67- "$directory/SHA256SUMS" | sort)
+            (cd "$directory" && sha256sum --check --strict SHA256SUMS)
+            for asset in "${expected[@]}"; do
+              if [[ -e "dist/$asset" ]]; then
+                echo "::error::Duplicate release asset: $asset"
+                exit 1
+              fi
+              cp "$directory/$asset" dist/
+            done
+            cat "$directory/SHA256SUMS" >> dist/SHA256SUMS
+          done
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+
+      - name: Recheck tag and release
+        run: |
+          if ! tag_commit=$(gh api "repos/$GH_REPO/commits/refs%2Ftags%2F$VERSION" --jq .sha); then
+            echo "::error::Unable to resolve the remote release tag."
+            exit 1
+          fi
+          if [[ "$tag_commit" != "$COMMIT" ]]; then
+            echo "::error::The tag no longer points to the validated source commit."
+            exit 1
+          fi
+          if ! tags=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name'); then
+            echo "::error::Unable to check existing releases."
+            exit 1
+          fi
+          if grep -Fxq -- "$VERSION" <<< "$tags"; then
+            echo "::error::Release $VERSION already exists; it will not be overwritten."
+            exit 1
+          fi
+
+      - name: Create draft release
+        run: |
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          gh release create "$VERSION" dist/*.tar.gz dist/*.deb dist/*.rpm dist/SHA256SUMS \
+            --verify-tag --draft --title "secstore $VERSION" --generate-notes \
+            --notes "Version $VERSION, built from $COMMIT. Formatting, vet, race tests, and private-namespace noswap mount checks passed on the Linux runner. ARM packages are cross-compiled; native ARM and package installation/lifecycle checks are not part of this release gate. Review the assets and workflow results before publishing this draft."

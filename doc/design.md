@@ -242,3 +242,21 @@ shown in the README. Before uninstalling an enabled service, disable it with
 `systemctl disable --now secstore-hydrate.service`. After removal, run
 `systemctl daemon-reload`. Existing vault and runtime data are not package-owned
 and are never deleted by package removal.
+
+Stable `vX.Y.Z` tags on commits already in `main` invoke the same CI checks and
+package builds used for development snapshots. Release package versions omit
+the tag's leading `v`; ordinary branch/PR builds retain
+`0.0.0-dev.<run number>`. Linux amd64, arm64, and ARMv7 packages are built from
+the exact tagged commit. ARM binaries are cross-compiled, not natively tested.
+
+Release archives additionally contain the README and this design document,
+alongside the executable, systemd unit, and license in a versioned directory.
+Archives do not change package installation or service-enablement behavior.
+
+The release workflow verifies the same run's assets and SHA-256 checksums,
+rechecks the remote tag's commit, and refuses existing releases, including
+drafts. Only the final draft-creation job has repository-content write access.
+Successful runs create drafts for manual review and publishing; they do not
+publish automatically. Package installation/lifecycle tests are not part of
+this gate. See [Releases](../README.md#releases) for tag rules, asset naming,
+checksum verification, and failure/retry procedures.
