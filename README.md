@@ -10,7 +10,8 @@ needed to run it.
 Use a Linux host with tmpfs `noswap` support (upstream kernel 6.4+) and root
 mounting privileges.
 
-Install the `.deb` or `.rpm` package for your architecture from a CI artifact:
+Download the `.deb` or `.rpm` package for your architecture from
+[GitHub Releases](https://github.com/Bpoe/secstore/releases), then install it:
 
 ```sh
 sudo apt install ./secstore_*.deb     # Debian / Ubuntu
@@ -141,8 +142,80 @@ nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
 For ARM64, set both `SECSTORE_ARCH` and `GOARCH` to `arm64`. For ARMv7, use
 `SECSTORE_ARCH=arm7`, `GOARCH=arm`, and `GOARM=7`. The package architecture must
 match the binary you build. Set `SECSTORE_VERSION` to the intended version;
-CI uses `0.0.0-dev.<run number>` for development snapshots.
+CI uses `0.0.0-dev.<run number>` for development snapshots. Release packages
+use the stable tag version without its leading `v`.
+
+`packaging/archive.sh` creates the archive and checksum list from `dist/`.
+Run it from the repository root after building both native packages, with
+`SECSTORE_VERSION`, `SECSTORE_ARCH`, and `RUNNER_TEMP` (a temporary staging
+directory) set.
 
 `.github/workflows/ci.yaml` checks formatting, vet, race-enabled tests, and
 real noswap mounts, then uploads static binaries and `.deb`/`.rpm` packages
-for amd64, arm64, and ARMv7.
+for amd64, arm64, and ARMv7, alongside archives and checksums. It runs for
+branch pushes and pull requests, and is reused by the release workflow.
+Development snapshots remain available as CI artifacts.
+
+## Releases
+
+The release workflow must first be merged into `main` and included in the
+commit being tagged. Choose an unused stable `vX.Y.Z` version and a reviewed
+commit already in `main`. For example, to tag the fetched tip of `main`:
+
+```sh
+git fetch origin
+git tag -a v1.2.3 origin/main -m "secstore v1.2.3"
+git push origin refs/tags/v1.2.3
+```
+
+Both annotated and lightweight tags are supported. The
+[release workflow](.github/workflows/release.yaml) rejects prerelease tags,
+build metadata, leading-zero version components, commits outside `main`, and
+existing releases (including drafts). Tags without the `v` prefix do not
+trigger releases.
+
+Release builds use the exact tagged commit and the same checks and packaging
+as ordinary CI. Tests run on the Linux runner's native architecture; ARM
+packages are cross-compiled. Native ARM execution and package
+installation/lifecycle tests are not part of the release gate.
+
+Each release includes:
+
+- `secstore-vX.Y.Z-linux-<arch>.tar.gz`, where `<arch>` is `amd64`, `arm64`,
+  or `arm7` (ARMv7).
+- `secstore_X.Y.Z_<arch>.deb`, using Debian architectures `amd64`, `arm64`,
+  or `armhf` (ARMv7).
+- `secstore-X.Y.Z-1.<arch>.rpm`, using RPM architectures `x86_64`, `aarch64`,
+  or `armv7hl` (ARMv7).
+- `SHA256SUMS` covering all downloadable archives and packages.
+
+Archives have a versioned root containing `bin/secstore`, the systemd unit
+under `packaging/systemd/`, the README, design document, and license. They do
+not initialize a store or install/enable a service. Native packages remain the
+recommended installation method.
+
+Download `SHA256SUMS` alongside your chosen assets and verify them on Linux:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+After all checks pass, the workflow downloads the same run's build artifacts,
+verifies their exact filenames and checksums, and rechecks the tag's commit.
+It creates a **draft normal release**, not a prerelease. Review the assets,
+source commit, and workflow results in **Releases**, then publish manually.
+The workflow never creates or moves tags, overwrites releases, or publishes
+automatically. It uses the built-in `GITHUB_TOKEN`; no additional secret is
+required.
+
+### Failures and retries
+
+Build, source, API, or asset-verification failures prevent draft creation.
+Inspect the failed job's logs before retrying. Re-run failed jobs while the
+original artifacts remain available; use **Re-run all jobs** if artifacts
+have expired or need rebuilding so the replacement payloads pass the checks.
+
+An existing draft or published release stops the run. A partially failed
+upload can leave an incomplete draft: inspect it and remove it manually only
+after review before retrying the same unchanged tag. For source fixes, merge
+the fix and push a new version tag. Never move an existing release tag.
