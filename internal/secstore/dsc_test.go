@@ -15,8 +15,8 @@ func TestDSCInput(t *testing.T) {
 	}{
 		{"get", "get", `{"name":"app/key"}`, true},
 		{"empty-value", "set", `{"name":"app/key","value":""}`, true},
-		{"secure-string-object", "set", `{"name":"key","value":{"secureString":"synthetic-secret"}}`, false},
-		{"empty-secure-string-object", "set", `{"name":"key","value":{"secureString":""}}`, false},
+		{"secure-string-object", "set", `{"name":"key","value":{"secureString":"synthetic-secret"}}`, true},
+		{"empty-secure-string-object", "set", `{"name":"key","value":{"secureString":""}}`, true},
 		{"absent", "test", `{"name":"key","_exist":false}`, true},
 		{"null-compliance", "get", `{"name":"key","_inDesiredState":null}`, true},
 		{"whitespace", "get", " \n{\"name\":\"key\"}\t\n", true},
@@ -35,8 +35,16 @@ func TestDSCInput(t *testing.T) {
 		{"null-value", "set", `{"name":"key","value":null}`, false},
 		{"wrong-value", "set", `{"name":"key","value":{}}`, false},
 		{"wrong-secure-string", "set", `{"name":"key","value":{"secureString":null}}`, false},
+		{"secure-number", "set", `{"name":"key","value":{"secureString":123}}`, false},
+		{"secure-boolean", "set", `{"name":"key","value":{"secureString":true}}`, false},
+		{"secure-array", "set", `{"name":"key","value":{"secureString":["synthetic-secret"]}}`, false},
+		{"nested-secure-string", "set", `{"name":"key","value":{"secureString":{"secureString":"synthetic-secret"}}}`, false},
+		{"unknown-secure-key", "set", `{"name":"key","value":{"synthetic-secret":""}}`, false},
+		{"secure-key-case", "set", `{"name":"key","value":{"SecureString":"synthetic-secret"}}`, false},
 		{"extra-secure-property", "set", `{"name":"key","value":{"secureString":"","synthetic-secret":true}}`, false},
 		{"duplicate-secure-property", "set", `{"name":"key","value":{"secureString":"","secureString":"synthetic-secret"}}`, false},
+		{"escaped-duplicate-secure-property", "set", `{"name":"key","value":{"secureString":"synthetic-secret","\u0073ecureString":""}}`, false},
+		{"truncated-secure-string", "set", `{"name":"key","value":{"secureString":"synthetic-secret"`, false},
 		{"null-exist", "get", `{"name":"key","_exist":null}`, false},
 		{"wrong-exist", "get", `{"name":"key","_exist":"synthetic-secret"}`, false},
 		{"unknown", "get", `{"name":"key","synthetic-secret":true}`, false},
@@ -57,10 +65,29 @@ func TestDSCInput(t *testing.T) {
 			if err != nil && strings.Contains(err.Error(), "synthetic-secret") {
 				t.Fatal("input leaked in error")
 			}
-			if tc.name == "empty-value" && (request.value == nil || *request.value != "" || !request.exist) {
+			if (tc.name == "empty-value" || tc.name == "empty-secure-string-object") &&
+				(request.value == nil || *request.value != "" || !request.exist) {
 				t.Fatal("empty value or default existence lost")
 			}
 		})
+	}
+}
+
+func TestDSCValueNormalization(t *testing.T) {
+	for _, inputValue := range []string{
+		`"synthetic-secret-\u00e9-\u0000\n\""`,
+		`{"secureString":"synthetic-secret-\u00e9-\u0000\n\""}`,
+		`{"\u0073ecureString":"synthetic-secret-\u00e9-\u0000\n\""}`,
+	} {
+		for _, operation := range []string{"get", "test", "set"} {
+			request, err := readDSCRequest(strings.NewReader(`{"name":"key","value":`+inputValue+`}`), operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.value == nil || *request.value != "synthetic-secret-\u00e9-\x00\n\"" {
+				t.Fatal("secret contents changed during normalization")
+			}
+		}
 	}
 }
 

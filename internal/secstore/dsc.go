@@ -85,8 +85,9 @@ func readDSCRequest(r io.Reader, operation string) (dscRequest, error) {
 			}
 			request.name = *name
 		case "value":
-			if err := decoder.Decode(&request.value); err != nil || request.value == nil {
-				return request, errors.New("value must be a string")
+			request.value, err = readDSCValue(decoder)
+			if err != nil {
+				return request, err
 			}
 		case "_exist":
 			var exist *bool
@@ -116,6 +117,36 @@ func readDSCRequest(r io.Reader, operation string) (dscRequest, error) {
 		return request, errors.New("value is required when _exist is true")
 	}
 	return request, nil
+}
+
+func readDSCValue(decoder *json.Decoder) (*string, error) {
+	invalid := errors.New("value must be a string or an object containing only a secureString string")
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, invalid
+	}
+	if value, ok := token.(string); ok {
+		return &value, nil
+	}
+	// DSC transports secureString parameters as tagged objects. Normalize
+	// both forms immediately so neither can bypass secret handling.
+	if token != json.Delim('{') {
+		return nil, invalid
+	}
+	key, err := decoder.Token()
+	if err != nil || key != "secureString" {
+		return nil, invalid
+	}
+	token, err = decoder.Token()
+	value, ok := token.(string)
+	if err != nil || !ok {
+		return nil, invalid
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') {
+		return nil, invalid
+	}
+	return &value, nil
 }
 
 func runDSC(args []string, stdin io.Reader, stdout, stderr io.Writer) error {

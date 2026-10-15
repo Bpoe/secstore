@@ -54,9 +54,19 @@
           "description": "The slash-separated secret name."
         },
         "value": {
-          "type": "string",
+          "oneOf": [
+            {"type": "string"},
+            {
+              "type": "object",
+              "required": ["secureString"],
+              "additionalProperties": false,
+              "properties": {
+                "secureString": {"type": "string", "writeOnly": true}
+              }
+            }
+          ],
           "writeOnly": true,
-          "description": "Secret input, including an empty string. Required by Test/Set when _exist is true. Never returned."
+          "description": "Secret string or DSC secureString input, including an empty string. Both forms are sensitive and never returned. Required by Test/Set when _exist is true."
         },
         "_exist": {
           "$ref": "https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/v3.1.0/resource/properties/exist.json"

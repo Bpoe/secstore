@@ -92,9 +92,14 @@ Get/Test/Set to the three `dsc` subcommands with JSON input on stdin. Protocol
 handling is separate from the legacy CLI. The schema permits name-only Get;
 Test/Set enforce a required value when `_exist` is true or omitted.
 
-The value is a secret string, including an empty string. Object values and
-secure-value transport envelopes are rejected. Stored bytes are the UTF-8 string
-contents. Legacy `add` still supports arbitrary binary stdin.
+The value accepts either a normal JSON string or DSC's secureString transport
+object, containing exactly one `secureString` property whose value is a string.
+Both forms support empty strings and are normalized to the same internal secret
+string immediately. Neither form is logged or returned, and switching forms for
+the same value does not rewrite ciphertext. Extra/duplicate fields, nested
+objects, null, and non-string contents are rejected. Stored bytes are the UTF-8
+string contents, never the transport JSON. Legacy `add` still supports arbitrary
+binary stdin.
 
 DSC input is bounded to one MiB of encoded JSON, including whitespace. Invalid
 JSON, duplicate/unknown properties, trailing documents, invalid names, wrong
@@ -140,9 +145,11 @@ offline validation. The runtime version and published schema versions differ;
 the manifest uses the published, supported v3.1.0 schema rather than an invented
 v3.3.0 schema URI.
 
-The README and integration tests use a plain `string` parameter with
-`[parameters('secretValue')]` for now, pending upstream DSC secureString parameter
-handling. No `.secureString` member access or object-envelope workaround is used.
+The README shows a `secureString` parameter with `[parameters('secretValue')]`.
+A `string` parameter uses the same expression and is equally sensitive to the
+resource. DSC supplies the secureString transport object automatically; no
+`.secureString` member access is needed. Integration tests cover both parameter
+types, cross-form comparisons, unchanged Set behavior, and sanitized errors.
 
 ## Storage and configuration
 
@@ -236,10 +243,12 @@ The resource never returns or logs secret values, ciphertext, hashes, or identit
 material. `writeOnly` describes its input contract; it is not an engine-wide
 redaction guarantee. Actual DSC 3.3 integration checks show that plain-string
 `dsc resource test` input appears in the engine's `desiredState.value`. Config
-Test with the documented string parameter also exposes the value in
+Test with a string parameter also exposes the value in
 `results[].result.desiredState.value`. Valid resource Get/Set and config Set
-results are sanitized in the tested cases. The tests explicitly distinguish
-this engine-originated exposure from the resource's sanitized output.
+results are sanitized for both input forms in the tested cases. The tested
+secureString Test results redact the desired value to `<secureValue>`. The tests
+explicitly distinguish engine-originated exposure from the resource's sanitized
+output; accepting a normal string never authorizes the resource to reveal it.
 
 DSC extensions or dscd resolve and supply secrets; secstore performs no Key Vault
 access or upstream retrieval. These components, DSC's diagnostics/results, and
@@ -347,7 +356,7 @@ rechecks the remote tag's commit, and refuses existing releases, including
 drafts. Only the final draft-creation job has repository-content write access.
 Successful runs create drafts for manual review and publishing; they do not
 publish automatically. Native amd64 CI installs both package formats into
-isolated roots and runs pinned DSC 3.3.0 discovery/lifecycle and string-parameter
+isolated roots and runs pinned DSC 3.3.0 discovery/lifecycle and both parameter
 checks against the installed files in private mount namespaces. Native ARM
 execution and systemd service-lifecycle tests are not part of
 this gate. See [Releases](../README.md#releases) for tag rules, asset naming,

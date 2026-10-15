@@ -68,8 +68,11 @@ Properties:
 - `name`: required slash-separated secret name, using the existing secstore
   validation rules.
 - `value`: sensitive secret string, including an empty string. Required by
-  Test/Set for desired presence; optional for Get or desired absence. Object
-  values, including secure-value transport envelopes, are not accepted.
+  Test/Set for desired presence; optional for Get or desired absence. Accepts
+  either a normal JSON string or DSC's `{"secureString":"..."}` transport form.
+  The object must contain exactly that one string field. Both forms are treated
+  as secrets: neither is logged or returned, and only the string contents are
+  encrypted and compared.
 - `_exist`: boolean, defaulting to true. False requests absence.
 - `_inDesiredState`: read-only boolean returned by Test; null in Get/Set results.
 
@@ -114,7 +117,7 @@ Use this configuration as `secrets.dsc.config.yaml`:
 $schema: https://aka.ms/dsc/schemas/v3/bundled/config/document.json
 parameters:
   secretValue:
-    type: string
+    type: secureString
 resources:
   - name: databasePassword
     type: Secstore/secrets
@@ -123,9 +126,12 @@ resources:
       value: "[parameters('secretValue')]"
 ```
 
-Use a plain `string` parameter for now, pending upstream DSC `secureString`
-parameter handling. Do not append `.secureString` to the expression. A string
-parameter does not provide DSC secure-value tagging or engine-output redaction.
+Both `secureString` and `string` parameter types are supported. To use a normal
+string parameter, change only `type: secureString` to `type: string`; secstore
+still treats the value as secret. Keep `[parameters('secretValue')]` in either
+case, without `.secureString` member access. DSC supplies its tagged object for
+secureString parameters, and secstore normalizes both forms to the same internal
+secret value.
 
 Supply the parameter document through stdin from your existing trusted parameter
 provider, not a literal command-line argument or environment variable:
@@ -136,7 +142,8 @@ sudo dsc config --parameters-file - set --file secrets.dsc.config.yaml
 ```
 
 DSC expects the stdin parameter document to have a `parameters` object containing
-`secretValue` as a string. Parameter resolution, Azure Key Vault access, and scheduling belong
+`secretValue` as a string for either parameter declaration. Parameter resolution,
+Azure Key Vault access, and scheduling belong
 to DSC secret extensions and/or dscd; secstore does not implement them.
 
 ### Secret output boundary
@@ -146,11 +153,14 @@ material in DSC output, and sanitizes its failures. The canonical property schem
 are bundled into the manifest so DSC does not need to fetch them at runtime.
 
 **Do not assume engine output is secret-free.** With DSC 3.3.0, integration checks
-observe that `dsc resource test` includes the supplied secret in the engine's
-`desiredState.value`, despite `writeOnly: true`. `dsc config test` with the string
-parameter above likewise includes it in `results[].result.desiredState.value`.
-Valid resource Get/Set and config Set results do not expose it in the tested
-scenarios. These exposure expectations are checked against the pinned runtime.
+observe that `dsc resource test` with a normal string includes the supplied secret
+in the engine's `desiredState.value`, despite `writeOnly: true`. `dsc config test`
+with a `string` parameter likewise includes it in
+`results[].result.desiredState.value`. With secureString input, the tested DSC
+Test results redact the desired value to `<secureValue>`. Valid resource Get/Set
+and config Set results do not expose either form in the tested scenarios.
+These exposure expectations are checked against the pinned runtime; secstore
+itself never distinguishes a normal string as safe to display.
 
 These checks do not guarantee redaction for other versions, malformed inputs,
 verbose/debug traces, extensions, dscd, or downstream logging. Treat resolved input,
@@ -283,7 +293,7 @@ real noswap mounts, then uploads static binaries and `.deb`/`.rpm` packages
 for amd64, arm64, and ARMv7, alongside archives and checksums. It runs for
 branch pushes and pull requests, and is reused by the release workflow.
 The amd64 job installs both package formats into isolated package roots and runs
-DSC 3.3.0 discovery, lifecycle, and string-parameter checks against the installed
+DSC 3.3.0 discovery, lifecycle, and both parameter forms against the installed
 files. Development snapshots remain available as CI artifacts.
 
 ## Releases

@@ -19,11 +19,11 @@ import (
 	"time"
 )
 
-func dscInput(t *testing.T, name string, value *string, exists bool) string {
+func dscInput(t *testing.T, name string, value any, exists bool) string {
 	t.Helper()
 	input := map[string]any{"name": name, "_exist": exists}
 	if value != nil {
-		input["value"] = *value
+		input["value"] = value
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
@@ -211,6 +211,46 @@ func TestDSCReadOnly(t *testing.T) {
 	}
 }
 
+func TestDSCSecretForms(t *testing.T) {
+	for _, firstForm := range []string{"string", "secureString"} {
+		t.Run(firstForm, func(t *testing.T) {
+			s := testStore(t)
+			var diagnostics bytes.Buffer
+			s.log = &diagnostics
+			secret := "synthetic-secret-\u00e9-\x00\n"
+			plain := dscInput(t, "app/key", secret, true)
+			secure := dscInput(t, "app/key", map[string]string{"secureString": secret}, true)
+			first := plain
+			if firstForm == "secureString" {
+				first = secure
+			}
+			assertDSC(t, s, "set", first, true, false, "_exist", "value")
+			before := snapshotDSC(t, s.vaultDir)
+			for _, input := range []string{plain, secure} {
+				assertDSC(t, s, "get", input, true, false)
+				assertDSC(t, s, "test", input, true, true)
+				assertDSC(t, s, "set", input, true, false)
+			}
+			if !reflect.DeepEqual(before, snapshotDSC(t, s.vaultDir)) {
+				t.Fatal("changing the input representation rewrote the secret")
+			}
+			assertMissing(t, filepath.Join(s.runDir, "app"))
+			for _, value := range []string{"synthetic-replacement", ""} {
+				plain = dscInput(t, "app/key", value, true)
+				secure = dscInput(t, "app/key", map[string]string{"secureString": value}, true)
+				assertDSC(t, s, "test", secure, true, false, "value")
+				assertDSC(t, s, "set", secure, true, false, "value")
+				assertDSC(t, s, "test", plain, true, true)
+				assertDSC(t, s, "set", plain, true, false)
+			}
+			assertDSC(t, s, "set", dscInput(t, "app/key", map[string]string{"secureString": secret}, false), false, false, "_exist")
+			if strings.Contains(diagnostics.String(), "synthetic-") {
+				t.Fatal("secret contents leaked through diagnostics")
+			}
+		})
+	}
+}
+
 func TestDSCFailures(t *testing.T) {
 	for _, failure := range []string{"identity", "missing-identity", "missing-secrets", "missing-lock", "truncated", "tampered", "symlink", "writable", "wrong-parent"} {
 		t.Run(failure, func(t *testing.T) {
@@ -263,10 +303,12 @@ func TestDSCFailures(t *testing.T) {
 				}
 			}
 			for _, operation := range []string{"get", "test", "set"} {
-				var output bytes.Buffer
-				err := s.runDSC(operation, strings.NewReader(`{"name":"app/key","value":"different-synthetic-secret"}`), &output)
-				if err == nil || output.Len() != 0 || strings.Contains(err.Error(), "synthetic-secret") {
-					t.Fatalf("%s did not fail safely: %v", operation, err)
+				for _, value := range []any{"different-synthetic-secret", map[string]string{"secureString": "different-synthetic-secret"}} {
+					var output bytes.Buffer
+					err := s.runDSC(operation, strings.NewReader(dscInput(t, "app/key", value, true)), &output)
+					if err == nil || output.Len() != 0 || strings.Contains(err.Error(), "synthetic-secret") {
+						t.Fatalf("%s did not fail safely: %v", operation, err)
+					}
 				}
 			}
 			if failure == "truncated" || failure == "tampered" {

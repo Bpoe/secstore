@@ -183,6 +183,8 @@ func TestDSCIntegration(t *testing.T) {
 	}
 	desired := dscInput(t, "app/key", &secret, true)
 	changed := dscInput(t, "app/key", &replacement, true)
+	secureDesired := dscInput(t, "app/key", map[string]string{"secureString": secret}, true)
+	secureChanged := dscInput(t, "app/key", map[string]string{"secureString": replacement}, true)
 	absent := dscInput(t, "app/key", nil, false)
 	output, diagnostics := resource("get", `{"name":"app/key"}`)
 	assertSanitized(output, diagnostics)
@@ -194,22 +196,49 @@ func TestDSCIntegration(t *testing.T) {
 		t.Fatal("Get reported a missing secret as present")
 	}
 	checkTest(desired, false, false, true, "_exist", "value")
+	checkTest(secureDesired, false, false, false, "_exist", "value")
 	checkTest(absent, false, true, false)
 	checkSet(absent, false)
 	assertMissing(t, s.vaultDir)
 	checkSet(desired, true, "_exist", "value")
 	assertMissing(t, filepath.Join(s.runDir, "app", "key"))
 	checkTest(desired, true, true, true)
+	checkTest(secureDesired, true, true, false)
 	before := snapshotDSC(t, s.vaultDir)
 	checkSet(desired, true)
+	checkSet(secureDesired, true)
 	if !reflect.DeepEqual(before, snapshotDSC(t, s.vaultDir)) {
 		t.Fatal("DSC repeated Set rewrote unchanged storage")
 	}
 	checkTest(changed, true, false, true, "value")
-	checkSet(changed, true, "value")
-	for _, op := range []string{"get", "test", "set"} {
-		output, diagnostics := run(binary, changed, "dsc", op)
-		assertSanitized(output, diagnostics)
+	checkTest(secureChanged, true, false, false, "value")
+	checkSet(secureChanged, true, "value")
+	checkSet(changed, true)
+	for _, input := range []string{changed, secureChanged} {
+		for _, op := range []string{"get", "test", "set"} {
+			output, diagnostics := run(binary, input, "dsc", op)
+			assertSanitized(output, diagnostics)
+		}
+	}
+	before = snapshotDSC(t, s.vaultDir)
+	for _, value := range []any{replacement, map[string]string{"secureString": replacement}} {
+		for _, op := range []string{"get", "test", "set"} {
+			command := exec.Command(binary, "dsc", op)
+			command.Stdin = strings.NewReader(dscInput(t, "../"+secret, value, true))
+			var stdout, stderr bytes.Buffer
+			command.Stdout, command.Stderr = &stdout, &stderr
+			var exitError *exec.ExitError
+			if err := command.Run(); !errors.As(err, &exitError) || exitError.ExitCode() != 1 {
+				t.Fatal("invalid secret input did not fail with the expected exit status")
+			}
+			if stdout.Len() != 0 {
+				t.Fatal("failed resource operation emitted state")
+			}
+			assertSanitized(stdout.Bytes(), stderr.Bytes())
+		}
+	}
+	if !reflect.DeepEqual(before, snapshotDSC(t, s.vaultDir)) {
+		t.Fatal("invalid input changed storage")
 	}
 
 	configPath := filepath.Join(base, "secret.dsc.config.yaml")
@@ -224,34 +253,46 @@ resources:
       name: app/key
       value: "[parameters('secretValue')]"
 `
-	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
-		t.Fatal(err)
-	}
 	parameters, err := json.Marshal(map[string]any{"parameters": map[string]string{"secretValue": replacement}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, diagnostics = run(dsc, string(parameters), "config", "--parameters-file", "-", "test", "--file", configPath, "--output-format", "json")
-	var configResult struct {
-		HadErrors bool `json:"hadErrors"`
-		Results   []struct {
-			Result dscEngineTest `json:"result"`
-		} `json:"results"`
+	for _, parameterType := range []string{"string", "secureString"} {
+		document := strings.Replace(config, "type: string", "type: "+parameterType, 1)
+		if err := os.WriteFile(configPath, []byte(document), 0600); err != nil {
+			t.Fatal(err)
+		}
+		output, diagnostics = run(dsc, string(parameters), "config", "--parameters-file", "-", "test", "--file", configPath, "--output-format", "json")
+		var configResult struct {
+			HadErrors bool `json:"hadErrors"`
+			Results   []struct {
+				Result dscEngineTest `json:"result"`
+			} `json:"results"`
+		}
+		decode(output, &configResult)
+		if configResult.HadErrors || len(configResult.Results) != 1 || !configResult.Results[0].Result.InDesiredState {
+			t.Fatalf("%s parameter did not reach the resource correctly", parameterType)
+		}
+		assertSanitized(diagnostics)
+		var desiredState struct {
+			Value string `json:"value"`
+		}
+		decode(configResult.Results[0].Result.DesiredState, &desiredState)
+		if parameterType == "secureString" {
+			assertSanitized(output)
+			if desiredState.Value != "<secureValue>" {
+				t.Fatal("DSC secureString redaction changed; review pinned engine expectations")
+			}
+		} else if desiredState.Value != replacement || bytes.Count(output, []byte(replacement)) != 1 || bytes.Contains(output, []byte(secret)) {
+			t.Fatal("DSC config test exposure changed; review pinned engine expectations")
+		}
+		before = snapshotDSC(t, s.vaultDir)
+		output, diagnostics = run(dsc, string(parameters), "config", "--parameters-file", "-", "set", "--file", configPath, "--output-format", "json")
+		assertSanitized(output, diagnostics)
+		if !reflect.DeepEqual(before, snapshotDSC(t, s.vaultDir)) {
+			t.Fatal("DSC config Set rewrote an unchanged secret")
+		}
 	}
-	decode(output, &configResult)
-	if configResult.HadErrors || len(configResult.Results) != 1 || !configResult.Results[0].Result.InDesiredState {
-		t.Fatal("string parameter configuration did not reach the resource correctly")
-	}
-	assertSanitized(diagnostics)
-	var desiredState struct {
-		Value string `json:"value"`
-	}
-	decode(configResult.Results[0].Result.DesiredState, &desiredState)
-	if desiredState.Value != replacement || bytes.Count(output, []byte(replacement)) != 1 || bytes.Contains(output, []byte(secret)) {
-		t.Fatal("DSC config test exposure changed; review pinned engine expectations")
-	}
-	output, diagnostics = run(dsc, string(parameters), "config", "--parameters-file", "-", "set", "--file", configPath, "--output-format", "json")
-	assertSanitized(output, diagnostics)
 	checkTest(absent, true, false, false, "_exist")
 	checkSet(absent, false, "_exist")
 	checkSet(absent, false)
@@ -265,7 +306,9 @@ resources:
 	checkTest(absent, false, true, false)
 	empty := ""
 	emptyInput := dscInput(t, "empty", &empty, true)
+	secureEmpty := dscInput(t, "empty", map[string]string{"secureString": empty}, true)
 	checkSet(emptyInput, true, "_exist", "value")
 	checkTest(emptyInput, true, true, false)
-	checkSet(emptyInput, true)
+	checkTest(secureEmpty, true, true, false)
+	checkSet(secureEmpty, true)
 }
