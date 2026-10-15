@@ -47,6 +47,128 @@ Packages do not automatically initialize the store or enable services.
 The service uses `0444` file permissions for unprivileged container users;
 root-owned `0700` host directories still restrict access.
 
+## Microsoft DSC
+
+The native DSC command resource **`Secstore/secrets`** ships with the same
+executable. DEB/RPM packages install its manifest at
+`/usr/bin/secstore.dsc.resource.json`, beside `/usr/bin/secstore`. DSC discovers
+it through PATH; if you override `DSC_RESOURCE_PATH`, include `/usr/bin` in that
+resource search path. The executable must also remain on PATH. No manual
+manifest copy or separate resource package is needed after package installation.
+
+The resource is tested with **DSC 3.3.0**. Discover it and inspect its schema:
+
+```sh
+dsc resource list Secstore/secrets
+dsc resource schema --resource Secstore/secrets
+```
+
+Properties:
+
+- `name`: required slash-separated secret name, using the existing secstore
+  validation rules.
+- `value`: sensitive secret string, including an empty string. Required by
+  Test/Set for desired presence; optional for Get or desired absence. Accepts
+  either a normal JSON string or DSC's `{"secureString":"..."}` transport form.
+  The object must contain exactly that one string field. Both forms are treated
+  as secrets: neither is logged or returned, and only the string contents are
+  encrypted and compared.
+- `_exist`: boolean, defaulting to true. False requests absence.
+- `_inDesiredState`: read-only boolean returned by Test; null in Get/Set results.
+
+`secstore dsc get`, `test`, and `set` each accept one JSON object on stdin.
+DSC input is limited to **1 MiB of UTF-8 JSON**, including syntax and whitespace.
+The existing `secstore add` remains an unlimited binary stdin stream.
+
+Get reports existence without returning the value, and authenticates any existing
+encrypted blob. Get/Test never initialize, create a lock, repair permissions, mount,
+or hydrate. A missing or safely empty store is absent. Missing optional nested
+name directories are also absent; damaged store structure, invalid identities,
+unsafe paths, permission failures, and corrupt ciphertext are errors.
+
+Test decrypts internally, fully verifies age authentication, and compares values.
+Set performs the same comparison under its writer lock and does not rewrite
+unchanged ciphertext. Set initializes a new store using the existing initialization
+logic, including mounting/verifying runtime tmpfs, but **never hydrates**.
+Therefore automatic initialization needs root mount privileges and tmpfs `noswap`
+support. All resource operations require root, just like the existing CLI.
+
+Setting `_exist: false` uses the existing removal behavior: it removes the
+encrypted blob and any corresponding runtime copy and prunes empty parent
+directories. Removing an absent secret does not initialize a missing store.
+Creation and updates leave hydrated copies unchanged. Hydration remains a separate
+operation; DSC does not restart services or containers.
+
+Get emits one sanitized state object. Test/Set use DSC's `stateAndDiff` contract:
+a state object followed by a JSON array of property names. Missing desired-present
+secrets report `_exist` and `value`; value drift reports `value`; deletion reports
+`_exist`. Compliant Test and unchanged Set return an empty array.
+
+For example, retrieving existence requires no secret input:
+
+```sh
+printf '%s\n' '{"name":"app/db_password"}' |
+  sudo dsc resource get --resource Secstore/secrets --file -
+```
+
+Use this configuration as `secrets.dsc.config.yaml`:
+
+```yaml
+$schema: https://aka.ms/dsc/schemas/v3/bundled/config/document.json
+parameters:
+  secretValue:
+    type: secureString
+resources:
+  - name: databasePassword
+    type: Secstore/secrets
+    properties:
+      name: app/db_password
+      value: "[parameters('secretValue')]"
+```
+
+Both `secureString` and `string` parameter types are supported. To use a normal
+string parameter, change only `type: secureString` to `type: string`; secstore
+still treats the value as secret. Keep `[parameters('secretValue')]` in either
+case, without `.secureString` member access. DSC supplies its tagged object for
+secureString parameters, and secstore normalizes both forms to the same internal
+secret value.
+
+Supply the parameter document through stdin from your existing trusted parameter
+provider, not a literal command-line argument or environment variable:
+
+```sh
+sudo dsc config --parameters-file - test --file secrets.dsc.config.yaml
+sudo dsc config --parameters-file - set --file secrets.dsc.config.yaml
+```
+
+DSC expects the stdin parameter document to have a `parameters` object containing
+`secretValue` as a string for either parameter declaration. Parameter resolution,
+Azure Key Vault access, and scheduling belong
+to DSC secret extensions and/or dscd; secstore does not implement them.
+
+### Secret output boundary
+
+Secstore never emits `value`, decrypted data, ciphertext, hashes, or identity
+material in DSC output, and sanitizes its failures. The canonical property schemas
+are bundled into the manifest so DSC does not need to fetch them at runtime.
+
+**Do not assume engine output is secret-free.** With DSC 3.3.0, integration checks
+observe that `dsc resource test` with a normal string includes the supplied secret
+in the engine's `desiredState.value`, despite `writeOnly: true`. `dsc config test`
+with a `string` parameter likewise includes it in
+`results[].result.desiredState.value`. With secureString input, the tested DSC
+Test results redact the desired value to `<secureValue>`. Valid resource Get/Set
+and config Set results do not expose either form in the tested scenarios.
+These exposure expectations are checked against the pinned runtime; secstore
+itself never distinguishes a normal string as safe to display.
+
+These checks do not guarantee redaction for other versions, malformed inputs,
+verbose/debug traces, extensions, dscd, or downstream logging. Treat resolved input,
+DSC results, and diagnostics as potentially secret-bearing; restrict access and
+avoid logging them. dscd is not exercised by this repository's tests. Secstore
+cannot provide end-to-end redaction or protection against privileged processes,
+process-memory inspection, or core dumps.
+
 ## Docker Compose
 
 Reference the hydrated host file as a Compose secret:
@@ -102,6 +224,7 @@ Build and install from source:
 ```sh
 CGO_ENABLED=0 go build -trimpath -o secstore ./cmd/secstore
 sudo install -m 0755 secstore /usr/bin/secstore
+sudo install -m 0644 secstore.dsc.resource.json /usr/bin/secstore.dsc.resource.json
 sudo install -m 0644 packaging/systemd/secstore-hydrate.service /etc/systemd/system/secstore-hydrate.service
 ```
 
@@ -126,15 +249,30 @@ Optionally verify interoperability with an installed legacy age CLI:
 SECSTORE_TEST_AGE="$(command -v age)" go test -run '^TestAgeCLICompatibility$' ./internal/secstore
 ```
 
+The DSC integration suite requires DSC 3.3.0 and the binary/manifest installed
+together (or staged together). It uses synthetic values and a private mount
+namespace. Set absolute paths for your installation:
+
+```sh
+go test -c -o secstore.test ./internal/secstore
+sudo unshare --mount --propagation private env \
+  SECSTORE_TEST_DSC="$(command -v dsc)" \
+  SECSTORE_TEST_BINARY=/usr/bin/secstore \
+  SECSTORE_TEST_MANIFEST=/usr/bin/secstore.dsc.resource.json \
+  ./secstore.test -test.run '^TestDSCIntegration$' -test.v
+```
+
 ### Build native packages
 
-[nFPM](https://nfpm.goreleaser.com/) is a build-time tool only:
+[nFPM](https://nfpm.goreleaser.com/) and `jq` are build-time tools only. Stage
+the manifest with the same version as the native package:
 
 ```sh
 go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
 export SECSTORE_VERSION=0.0.0-dev
 export SECSTORE_ARCH=amd64
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/secstore ./cmd/secstore
+jq --arg version "$SECSTORE_VERSION" '.version = $version' secstore.dsc.resource.json > dist/secstore.dsc.resource.json
 nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
 nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
 ```
@@ -154,7 +292,9 @@ directory) set.
 real noswap mounts, then uploads static binaries and `.deb`/`.rpm` packages
 for amd64, arm64, and ARMv7, alongside archives and checksums. It runs for
 branch pushes and pull requests, and is reused by the release workflow.
-Development snapshots remain available as CI artifacts.
+The amd64 job installs both package formats into isolated package roots and runs
+DSC 3.3.0 discovery, lifecycle, and both parameter forms against the installed
+files. Development snapshots remain available as CI artifacts.
 
 ## Releases
 
@@ -176,8 +316,9 @@ trigger releases.
 
 Release builds use the exact tagged commit and the same checks and packaging
 as ordinary CI. Tests run on the Linux runner's native architecture; ARM
-packages are cross-compiled. Native ARM execution and package
-installation/lifecycle tests are not part of the release gate.
+packages are cross-compiled. Installed-package DSC checks run on amd64; native
+ARM execution and systemd/package service-lifecycle checks are not part of the
+release gate.
 
 Each release includes:
 
@@ -189,8 +330,9 @@ Each release includes:
   or `armv7hl` (ARMv7).
 - `SHA256SUMS` covering all downloadable archives and packages.
 
-Archives have a versioned root containing `bin/secstore`, the systemd unit
-under `packaging/systemd/`, the README, design document, and license. They do
+Archives have a versioned root containing `bin/secstore` and
+`bin/secstore.dsc.resource.json`, the systemd unit under `packaging/systemd/`,
+the README, design document, and license. They do
 not initialize a store or install/enable a service. Native packages remain the
 recommended installation method.
 

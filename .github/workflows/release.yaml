@@ -105,7 +105,7 @@ jobs:
             expected=("secstore-$VERSION-linux-$arch.tar.gz"
                       "secstore_${package_version}_${deb_arch}.deb"
                       "secstore-${package_version}-1.${rpm_arch}.rpm")
-            diff <(printf '%s\n' secstore SHA256SUMS "${expected[@]}" | sort) \
+            diff <(printf '%s\n' secstore secstore.dsc.resource.json SHA256SUMS "${expected[@]}" | sort) \
                  <(find "$directory" -type f -printf '%P\n' | sort)
             diff <(printf '%s\n' "${expected[@]}" | sort) \
                  <(cut -c 67- "$directory/SHA256SUMS" | sort)
@@ -145,4 +145,4 @@ jobs:
           (cd dist && sha256sum --check --strict SHA256SUMS)
           gh release create "$VERSION" dist/*.tar.gz dist/*.deb dist/*.rpm dist/SHA256SUMS \
             --verify-tag --draft --title "secstore $VERSION" --generate-notes \
-            --notes "Version $VERSION, built from $COMMIT. Formatting, vet, race tests, and private-namespace noswap mount checks passed on the Linux runner. ARM packages are cross-compiled; native ARM and package installation/lifecycle checks are not part of this release gate. Review the assets and workflow results before publishing this draft."
+            --notes "Version $VERSION, built from $COMMIT. Formatting, vet, race tests, private-namespace noswap mounts, and DSC 3.3.0 checks against installed amd64 DEB/RPM files passed on the Linux runner. ARM packages are cross-compiled; native ARM and systemd service-lifecycle checks are not part of this release gate. Review the assets and workflow results before publishing this draft."

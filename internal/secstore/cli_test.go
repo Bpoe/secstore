@@ -50,7 +50,7 @@ func TestParseArgs(t *testing.T) {
 
 func TestHelp(t *testing.T) {
 	var stderr bytes.Buffer
-	if err := Run([]string{"--help"}, strings.NewReader(""), &stderr); err != nil {
+	if err := Run([]string{"--help"}, strings.NewReader(""), nil, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if stderr.String() != usage {

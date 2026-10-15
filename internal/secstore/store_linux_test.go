@@ -512,7 +512,7 @@ func TestRootRequired(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("non-root behavior requires an unprivileged test process")
 	}
-	if err := Run([]string{"init"}, nil, io.Discard); err == nil || !strings.Contains(err.Error(), "root") {
+	if err := Run([]string{"init"}, nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "root") {
 		t.Fatalf("root requirement not enforced: %v", err)
 	}
 }

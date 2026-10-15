@@ -8,6 +8,7 @@ set -euo pipefail
 archive="secstore-v${SECSTORE_VERSION}-linux-${SECSTORE_ARCH}"
 staging="$RUNNER_TEMP/$archive"
 install -Dm755 dist/secstore "$staging/bin/secstore"
+install -Dm644 dist/secstore.dsc.resource.json "$staging/bin/secstore.dsc.resource.json"
 install -Dm644 packaging/systemd/secstore-hydrate.service "$staging/packaging/systemd/secstore-hydrate.service"
 install -Dm644 doc/design.md "$staging/doc/design.md"
 install -m644 LICENSE README.md "$staging/"

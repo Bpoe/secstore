@@ -33,15 +33,29 @@ func secureFile(f *os.File, mode os.FileMode) error {
 }
 
 func acquireLock(vault *os.Root, timeout time.Duration) (*os.File, error) {
-	if err := regularFile(vault, ".lock"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	return openLock(vault, timeout, true)
+}
+
+func acquireExistingLock(vault *os.Root, timeout time.Duration) (*os.File, error) {
+	return openLock(vault, timeout, false)
+}
+
+func openLock(vault *os.Root, timeout time.Duration, create bool) (*os.File, error) {
+	if err := regularFile(vault, ".lock"); err != nil && !(create && errors.Is(err, fs.ErrNotExist)) {
 		return nil, err
 	}
-	f, err := vault.OpenFile(".lock", os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	if create {
+		flags = os.O_WRONLY | os.O_CREATE | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	}
+	f, err := vault.OpenFile(".lock", flags, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
-	if err := secureFile(f, 0600); err != nil {
-		return nil, errors.Join(err, f.Close())
+	if create {
+		if err := secureFile(f, 0600); err != nil {
+			return nil, errors.Join(err, f.Close())
+		}
 	}
 	deadline := time.Now().Add(timeout)
 	for {

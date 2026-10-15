@@ -77,11 +77,49 @@ jobs:
       - name: Install packaging tool
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
 
+      - name: Stage versioned DSC manifest
+        run: jq --arg version "$SECSTORE_VERSION" '.version = $version' secstore.dsc.resource.json > dist/secstore.dsc.resource.json
+
       - name: Package deb
         run: nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
 
       - name: Package rpm
         run: nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+
+      - name: Install pinned DSC for integration
+        if: matrix.arch == 'amd64'
+        run: |
+          mkdir -p "$RUNNER_TEMP/dsc"
+          curl --fail --silent --show-error --location \
+            https://github.com/PowerShell/DSC/releases/download/v3.3.0/DSC-3.3.0-x86_64-linux.tar.gz \
+            --output "$RUNNER_TEMP/dsc.tar.gz"
+          echo "cf17d1a130b65332ec65380ee9368133101d13d8f40c1a501038920b1e9cd748  $RUNNER_TEMP/dsc.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/dsc.tar.gz" -C "$RUNNER_TEMP/dsc"
+          "$RUNNER_TEMP/dsc/dsc" --version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm
+
+      - name: Test installed DEB and RPM DSC resources
+        if: matrix.arch == 'amd64'
+        run: |
+          for format in deb rpm; do
+            root="$RUNNER_TEMP/secstore-$format"
+            sudo mkdir -p "$root"
+            if [[ "$format" == deb ]]; then
+              sudo dpkg --root="$root" --install dist/*.deb
+            else
+              sudo rpm --root "$root" --initdb
+              sudo rpm --root "$root" --install dist/*.rpm
+            fi
+            test "$(stat -c '%a:%u:%g' "$root/usr/bin/secstore.dsc.resource.json")" = "644:0:0"
+            test "$(jq -r .version "$root/usr/bin/secstore.dsc.resource.json")" = "$SECSTORE_VERSION"
+            sudo unshare --mount --propagation private env \
+              SECSTORE_TEST_DSC="$RUNNER_TEMP/dsc/dsc" \
+              SECSTORE_TEST_BINARY="$root/usr/bin/secstore" \
+              SECSTORE_TEST_MANIFEST="$root/usr/bin/secstore.dsc.resource.json" \
+              ./secstore.test -test.run '^TestDSCIntegration$' -test.v
+          done
 
       - name: Package archive and checksums
         run: bash packaging/archive.sh
